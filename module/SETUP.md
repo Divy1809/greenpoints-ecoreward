@@ -1,28 +1,26 @@
-# Add Eco Activity — setup and demo
+# GreenPoints local setup
 
-## Local demonstration
+## Start the complete demo
 
 1. Install Node.js 18 or later.
-2. In this `module` folder, run `npm start`.
-3. Visit `http://localhost:3000`, submit an activity, and see the confirmation and leaderboard.
-4. For a command-line proof of the same flow, run `npm run demo`.
-5. Run `npm test` to execute the validation and processing tests.
+2. Open a terminal in this `module` directory.
+3. Run `npm start`.
+4. Open `http://localhost:3000`.
+5. Create an account with a display name, lower-case user ID, and an 8+ character password.
+6. Select an eco activity. Its point value is displayed as read-only. Record it to update the dashboard, history, rank, badge progress, and monthly report.
 
-No cloud credentials are required for the review demo. The local adapter creates `data/greenpoints-local-dynamodb.json`, representing DynamoDB's `Activities` and `UserPoints` tables.
+The local database is created at `data/greenpoints-local-dynamodb.json`. It is ignored by Git and can be deleted to reset local demo data.
 
-## AWS deployment mapping
+## Verify
 
-- Host the provided form as a React/static frontend on Amazon S3 behind CloudFront.
-- Create API Gateway routes for `POST /activities` and `GET /leaderboard`.
-- Package `lambda.js` and `activity-service.js` in AWS Lambda (Node.js 20).
-- Replace `LocalDynamoDBRepository` with DynamoDB `TransactWriteItems`: put an activity and increment the user's point total atomically.
-- Give the Lambda role least-privilege access to `Activities`, `UserPoints`, CloudWatch Logs, and SNS/EventBridge for reward events.
+Run `npm test` to test catalog validation, point protection, totals, history, leaderboard rank, badges, and monthly reports. Run `npm run demo` to preserve the original Review 1 command-line Add Eco Activity proof.
 
-## API example
+## Local authentication
 
-```json
-POST /activities
-{"userId":"student-demo","type":"recycling","points":20,"timestamp":"2026-08-26T10:00:00Z"}
-```
+The local demo uses a password-hashed JSON account store and short-lived in-memory bearer sessions. This allows the full flow without AWS credentials. It is for local academic demonstration—not a replacement for Cognito in production.
 
-The response contains a confirmation, stored activity record, and `updatedPointTotal`.
+## AWS hand-off (not deployed automatically)
+
+`template.yaml` creates a Cognito user pool, API Gateway, Lambda, and DynamoDB tables with AWS SAM. The Lambda uses the Cognito JWT subject as the user ID and `aws-dynamodb-repository.js` for transactional point updates. Run `npm install` before packaging the optional AWS SDK, then authenticate the AWS CLI yourself and validate/deploy with SAM in an AWS account. The local dashboard/report endpoints remain application-level logic; Athena/QuickSight is an architecture integration point for future managed analytics.
+
+Never commit AWS credentials, Cognito secrets, or `.env` files. Supply table IDs and Cognito frontend configuration through deployment environment settings only.

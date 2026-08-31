@@ -1,0 +1,30 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: GreenPoints serverless activity API (deploy only with your AWS account).
+Resources:
+  GreenPointsUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties: { UserPoolName: greenpoints-users, UsernameAttributes: [email], AutoVerifiedAttributes: [email] }
+  GreenPointsUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties: { UserPoolId: !Ref GreenPointsUserPool, GenerateSecret: false, ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH] }
+  ActivitiesTable:
+    Type: AWS::DynamoDB::Table
+    Properties: { BillingMode: PAY_PER_REQUEST, AttributeDefinitions: [{AttributeName: userId, AttributeType: S}, {AttributeName: activityId, AttributeType: S}], KeySchema: [{AttributeName: userId, KeyType: HASH}, {AttributeName: activityId, KeyType: RANGE}] }
+  PointsTable:
+    Type: AWS::DynamoDB::Table
+    Properties: { BillingMode: PAY_PER_REQUEST, AttributeDefinitions: [{AttributeName: userId, AttributeType: S}], KeySchema: [{AttributeName: userId, KeyType: HASH}] }
+  ActivityApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Auth: { Authorizers: { CognitoAuthorizer: { UserPoolArn: !GetAtt GreenPointsUserPool.Arn } } }
+  ActivityFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: lambda.handler
+      Runtime: nodejs20.x
+      Environment: { Variables: { ACTIVITIES_TABLE: !Ref ActivitiesTable, POINTS_TABLE: !Ref PointsTable } }
+      Policies: [DynamoDBCrudPolicy: {TableName: !Ref ActivitiesTable}, DynamoDBCrudPolicy: {TableName: !Ref PointsTable}]
+      Events: { AddActivity: { Type: Api, Properties: { RestApiId: !Ref ActivityApi, Path: /activities, Method: post, Auth: { Authorizer: CognitoAuthorizer } } } }
