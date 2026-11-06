@@ -1,0 +1,262 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: GreenPoints - eco activity photo feed with points (Cognito, API Gateway, Lambda, DynamoDB, Rekognition, S3, CloudFront)
+
+Globals:
+  Function:
+    Timeout: 20
+    MemorySize: 256
+
+Resources:
+  # ---------- Cognito: signup / login ----------
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: greenpoints-users
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  # ---------- DynamoDB ----------
+  PostsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: postId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: postId
+          KeyType: HASH
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+
+  # ---------- S3: photos (private, served through short-lived signed links) ----------
+  PhotosBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins:
+              - '*'
+            AllowedMethods:
+              - GET
+              - PUT
+            AllowedHeaders:
+              - '*'
+            MaxAge: 3000
+
+  # ---------- Frontend hosting: private S3 bucket served by CloudFront ----------
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  SiteOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-site-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  SiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: GreenPoints frontend
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_All
+        Origins:
+          - Id: site
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt SiteOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: site
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          AllowedMethods:
+            - GET
+            - HEAD
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${SiteBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${SiteDistribution}
+
+  # ---------- API Gateway (HTTP API) with Cognito JWT authorizer ----------
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - authorization
+          - content-type
+      Auth:
+        Authorizers:
+          CognitoJwt:
+            IdentitySource: $request.header.Authorization
+            JwtConfiguration:
+              issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
+              audience:
+                - !Ref UserPoolClient
+
+  # ---------- Lambda ----------
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src/index.handler
+      Runtime: nodejs22.x
+      Environment:
+        Variables:
+          POSTS_TABLE: !Ref PostsTable
+          USERS_TABLE: !Ref UsersTable
+          BUCKET: !Ref PhotosBucket
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PostsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+        - S3CrudPolicy:
+            BucketName: !Ref PhotosBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rekognition:DetectLabels
+              Resource: '*'
+      Events:
+        ActivityTypes:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /activity-types
+            Method: GET
+        Feed:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /feed
+            Method: GET
+        Leaderboard:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /leaderboard
+            Method: GET
+        Me:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /me
+            Method: GET
+            Auth:
+              Authorizer: CognitoJwt
+        UploadUrl:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /upload-url
+            Method: POST
+            Auth:
+              Authorizer: CognitoJwt
+        CreatePost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /posts
+            Method: POST
+            Auth:
+              Authorizer: CognitoJwt
+        MyPosts:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /my-posts
+            Method: GET
+            Auth:
+              Authorizer: CognitoJwt
+        Rewards:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /rewards
+            Method: GET
+        Redeem:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /rewards/redeem
+            Method: POST
+            Auth:
+              Authorizer: CognitoJwt
+
+Outputs:
+  Region:
+    Value: !Ref AWS::Region
+  ApiUrl:
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  PhotosBucketName:
+    Value: !Ref PhotosBucket
+  SiteUrl:
+    Value: !Sub https://${SiteDistribution.DomainName}
+  SiteBucketName:
+    Value: !Ref SiteBucket
+  DistributionId:
+    Value: !Ref SiteDistribution
